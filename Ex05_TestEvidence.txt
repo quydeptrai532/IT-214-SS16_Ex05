@@ -1,0 +1,92 @@
+=== KET QUA CHAY TEST - Session16 / Bai tap 5 ===
+Du an        : flash-sale-resilient
+Test         : 9 tests | failures=0 | errors=0 | skipped=0
+Moi truong   : JDK 17.0.18 | Gradle 9.5.1 | Spring Boot 4.1.1 | Redis 5.0.14.1 (localhost:6379)
+Lenh chay    : gradlew test
+Ket qua      : BUILD SUCCESSFUL in 49s
+
+Test stampede / warm-up / hieu nang chay tren REDIS THAT.
+Nhom test "Redis chet" tro toi cong 6399 (khong co gi lang nghe) de mo phong su co
+ma KHONG dung Redis that cua may.
+
+
+--- A. CHONG CACHE STAMPEDE: @Cacheable(sync = true) ---
+   300 request dong thoi vao CUNG mot san pham vua het han cache, DB co do tre 300ms
+
+>>> [KB1 STAMPEDE - sync=true]  300 request dong thoi | so truy van DB = 1   | loi = 0
+>>> [KB2 STAMPEDE - sync=false] 300 request dong thoi | so truy van DB = 300 | loi = 0
+>>> [KB3 CACHE HIT]             300 request khi cache da am | so truy van DB tang them = 0 | loi = 0
+
+  => sync = true gom 300 request thanh DUNG 1 truy van DB.
+     Khong co sync thi 300 request = 300 truy van DB -> Database sap.
+     Lat sau (KB3) thi ca 300 request deu la cache hit, khong cham DB.
+
+  CANH BAO KY THUAT (da gap va da sua): voi cach tao RedisCacheManager thong thuong
+     (RedisCacheManager.builder(connectionFactory)) thi sync = true KHONG he chong duoc
+     stampede - ket qua do duoc la 300/300 truy van DB y nhu sync = false.
+     Phai dung RedisCacheWriter.lockingRedisCacheWriter(connectionFactory) thi sync = true
+     moi thuc su khoa cac luong lai. Xem Ex05_Analysis.md muc 4.1.
+
+
+--- B. CHONG COLD START: CACHE WARM-UP ---
+
+>>> [KB6 WARM-UP] Thu nap = 100 | xac minh co trong Redis = 100 | thoi gian = 113 ms
+>>> [KB7 WARM-UP] Doc 100 san pham sau warm-up: | truy van DB = 0 | goi xuong DB qua ProductLoader = 0
+
+  => Warm-up nap san 100 san pham Flash Sale vao Redis TRUOC khi mo ban (113 ms).
+     Sau do doc ca 100 san pham: 0 truy van DB -> khong con Cold Start.
+
+  Luu y: warm-up CO XAC MINH lai bang cach doc nguoc tu Redis (thu lai toi 5 lan).
+     Ly do: thao tac ghi len Redis cache khong hien ket qua ngay va khong nem loi khi loi
+     (phat hien tu Bai 4), nen "goi put roi bao thanh cong" la khong dang tin.
+
+
+--- C. CHONG SAP KHI REDIS CHET: RATE LIMITER + DEGRADED MODE ---
+   Mo phong: Redis chet hoan toan, RateLimiter dat limit-for-period = 1 de phep do tat dinh.
+
+>>> [KB4 REDIS DOWN] 200 request dong thoi khi Redis chet:
+        loi = 0 | truy van DB = 0 | bi Rate Limiter chan = 200
+        | phuc vu tu cache cuc bo = 200
+>>> [KB5 REDIS DOWN] Het ve + khong con ban sao cuc bo -> ServiceBusyException (API tra 429)
+
+  => Redis chet: 200 request van duoc phuc vu, KHONG request nao loi, Database KHONG bi cham
+     them mot truy van nao. Tat ca duoc chan o Rate Limiter va lay tu cache cuc bo (L1).
+     Neu ca ve lan ban sao cuc bo deu het -> tra 429 kem Retry-After thay vi sap he thong.
+
+  Day la diem mau chot: khi Redis chet, sync = true KHONG con tac dung (khoa nam trong Redis),
+     nen lop bao ve Database luc nay chinh la RateLimiter chu khong phai cache.
+
+
+--- D. SO SANH HIEU NANG TRUOC / SAU KHI CO CACHE ---
+
+>>> [KB8 HIEU NANG] Cold (cache miss, xuong DB co delay 120ms) = 125.45 ms
+                   | Warm (cache hit, lay tu Redis)            = 0.6305 ms
+                   | nhanh hon 199 lan
+
+>>> [KB9 10.000 REQUEST] 10000 request / 64 luong | tong thoi gian = 925 ms
+                   | trung binh = 0.092 ms/request
+                   | throughput = 10.812 request/giay
+                   | truy van DB = 0 | loi = 0
+
+  BANG SO SANH:
+
+  | Chi tieu                           | Khong cache        | Co cache (Redis)  | Cai thien    |
+  |------------------------------------|--------------------|-------------------|--------------|
+  | Do tre doc 1 san pham              | 125.45 ms          | 0.63 ms           | ~199 lan     |
+  | Truy van DB cho 10.000 request     | 10.000             | 0                 | 100%         |
+  | Throughput do duoc                 | ~8 request/giay(*) | 10.812 request/giay | ~1.350 lan |
+  | Truy van DB khi 300 request dong thoi (cache het han) | 300 | 1 | 300 lan   |
+
+  (*) 1 giay / 125.45 ms ~ 8 request/giay - tinh theo do tre do duoc o KB8.
+
+
+--- E. TONG HOP ---
+
+CacheStampedeTest         : 3 PASSED
+CacheWarmupTest           : 2 PASSED
+FlashSalePerformanceTest  : 2 PASSED
+RedisDownDegradedTest     : 2 PASSED
+------------------------------------------------------
+TONG                      : 9 PASSED | 0 FAILED | 0 ERROR
+
+BUILD SUCCESSFUL in 49s
